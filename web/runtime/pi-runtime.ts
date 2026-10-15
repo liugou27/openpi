@@ -2689,7 +2689,7 @@ export class PiWebRuntime implements WebRuntimeController {
 
   /** Active/retained subscriptions may overlap during native listener dispatch. */
   private withLiveMessageKey(session: object, event: AgentSessionEvent, project?: (key: string | undefined) => void) {
-    if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
+    if (this.disposed || (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end")) return;
     const live = this.liveMessageState(session);
     let observed = live.events.get(event);
     if (!observed) {
@@ -2710,7 +2710,7 @@ export class PiWebRuntime implements WebRuntimeController {
   }
 
   private projectEvent(session: AgentSession, event: AgentSessionEvent) {
-    if (this.disposed || session !== this.runtime.session) return;
+    if (session !== this.runtime.session) return;
     this.observeRetry(session, event);
     this.observeCompaction(session, event);
     if (event.type === "agent_start") {
@@ -3047,7 +3047,7 @@ export class PiWebRuntime implements WebRuntimeController {
       });
     };
     const unsubscribe = session.subscribe((event) => {
-      if (this.disposed || !this.retainedRuntimes.has(runtime) || this.runtime === runtime || runtime.session !== session) return;
+      if (!this.retainedRuntimes.has(runtime) || this.runtime === runtime || runtime.session !== session) return;
       this.withLiveMessageKey(session, event);
       this.observeRetry(session, event);
       this.observeCompaction(session, event);
