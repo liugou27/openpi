@@ -315,7 +315,7 @@ export class PiWebRuntime implements WebRuntimeController {
   /** Native aborts remain owned by Pi until its agent_settled event arrives. */
   private readonly turnAbortOperations = new Map<string, Promise<unknown>>();
   /** Live stream keys are per Session: retained Sessions keep streaming later. */
-  private liveMessageKeys?: WeakMap<object, { key?: string; sequence: number }>;
+  private liveMessageKeys?: WeakMap<object, { key?: string; sequence: number; events: WeakMap<AgentSessionEvent, { key?: string; projected: boolean }> }>;
   private readonly webSessionDirectory: string;
   private readonly dispatcherLease: HttpDispatcherLease;
   private readonly webHostLease: WebHostLease;
@@ -2681,14 +2681,36 @@ export class PiWebRuntime implements WebRuntimeController {
     this.liveMessageKeys ??= new WeakMap();
     let live = this.liveMessageKeys.get(session);
     if (!live) {
-      live = { key: undefined, sequence: 0 };
+      live = { key: undefined, sequence: 0, events: new WeakMap() };
       this.liveMessageKeys.set(session, live);
     }
     return live;
   }
 
+  /** Active/retained subscriptions may overlap during native Set dispatch. */
+  private withLiveMessageKey(session: object, event: AgentSessionEvent, project?: (key: string | undefined) => void) {
+    if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
+    const live = this.liveMessageState(session);
+    let observed = live.events.get(event);
+    if (!observed) {
+      if (event.type === "message_start") live.key = `live-${++live.sequence}`;
+      observed = { key: live.key, projected: false };
+      // Weak event ownership deduplicates dispatch without retaining message bodies.
+      live.events.set(event, observed);
+    }
+    try {
+      if (project && !observed.projected) {
+        observed.projected = true;
+        project(observed.key);
+      }
+    } finally {
+      // Project the end's captured key first; a reentrant start owns its new key.
+      if (event.type === "message_end" && live.key === observed.key) live.key = undefined;
+    }
+  }
+
   private projectEvent(session: AgentSession, event: AgentSessionEvent) {
-    if (session !== this.runtime.session) return;
+    if (this.disposed || session !== this.runtime.session) return;
     this.observeRetry(session, event);
     this.observeCompaction(session, event);
     if (event.type === "agent_start") {
@@ -2792,27 +2814,17 @@ export class PiWebRuntime implements WebRuntimeController {
           ...(event.finalError ? { finalError: projectAssistantError(event.finalError).value } : {}),
         });
         break;
-      case "message_start": {
-        const live = this.liveMessageState(session);
-        live.key = `live-${++live.sequence}`;
-        this.emit(event.type, {
-          sessionId: session.sessionManager.getSessionId(),
-          message: projectMessage(event.message, (path) => resolve(this.cwd, path)),
-          messageKey: live.key,
-        });
-        break;
-      }
+      case "message_start":
       case "message_update":
-      case "message_end": {
-        const live = this.liveMessageState(session);
-        this.emit(event.type, {
-          sessionId: session.sessionManager.getSessionId(),
-          message: projectMessage(event.message, (path) => resolve(this.cwd, path)),
-          ...(live.key ? { messageKey: live.key } : {}),
+      case "message_end":
+        this.withLiveMessageKey(session, event, (key) => {
+          this.emit(event.type, {
+            sessionId: session.sessionManager.getSessionId(),
+            message: projectMessage(event.message, (path) => resolve(this.cwd, path)),
+            ...(key ? { messageKey: key } : {}),
+          });
         });
-        if (event.type === "message_end") live.key = undefined;
         break;
-      }
       case "tool_execution_start":
       case "tool_execution_update":
       case "tool_execution_end":
@@ -3035,6 +3047,8 @@ export class PiWebRuntime implements WebRuntimeController {
       });
     };
     const unsubscribe = session.subscribe((event) => {
+      if (this.disposed || !this.retainedRuntimes.has(runtime) || this.runtime === runtime || runtime.session !== session) return;
+      this.withLiveMessageKey(session, event);
       this.observeRetry(session, event);
       this.observeCompaction(session, event);
       const owners = this.suspendedPromptTraces ??= new WeakMap();
