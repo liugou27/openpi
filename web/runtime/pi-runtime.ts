@@ -314,8 +314,8 @@ export class PiWebRuntime implements WebRuntimeController {
   >();
   /** Native aborts remain owned by Pi until its agent_settled event arrives. */
   private readonly turnAbortOperations = new Map<string, Promise<unknown>>();
-  private liveMessageKey?: string;
-  private liveMessageSequence = 0;
+  /** Live stream keys are per Session: retained Sessions keep streaming later. */
+  private liveMessageKeys?: WeakMap<object, { key?: string; sequence: number }>;
   private readonly webSessionDirectory: string;
   private readonly dispatcherLease: HttpDispatcherLease;
   private readonly webHostLease: WebHostLease;
@@ -2677,6 +2677,16 @@ export class PiWebRuntime implements WebRuntimeController {
     previous?.();
   }
 
+  private liveMessageState(session: object) {
+    this.liveMessageKeys ??= new WeakMap();
+    let live = this.liveMessageKeys.get(session);
+    if (!live) {
+      live = { key: undefined, sequence: 0 };
+      this.liveMessageKeys.set(session, live);
+    }
+    return live;
+  }
+
   private projectEvent(session: AgentSession, event: AgentSessionEvent) {
     if (session !== this.runtime.session) return;
     this.observeRetry(session, event);
@@ -2782,21 +2792,27 @@ export class PiWebRuntime implements WebRuntimeController {
           ...(event.finalError ? { finalError: projectAssistantError(event.finalError).value } : {}),
         });
         break;
-      case "message_start":
-        this.liveMessageKey = `live-${++this.liveMessageSequence}`;
+      case "message_start": {
+        const live = this.liveMessageState(session);
+        live.key = `live-${++live.sequence}`;
         this.emit(event.type, {
+          sessionId: session.sessionManager.getSessionId(),
           message: projectMessage(event.message, (path) => resolve(this.cwd, path)),
-          messageKey: this.liveMessageKey,
+          messageKey: live.key,
         });
         break;
+      }
       case "message_update":
-      case "message_end":
+      case "message_end": {
+        const live = this.liveMessageState(session);
         this.emit(event.type, {
+          sessionId: session.sessionManager.getSessionId(),
           message: projectMessage(event.message, (path) => resolve(this.cwd, path)),
-          ...(this.liveMessageKey ? { messageKey: this.liveMessageKey } : {}),
+          ...(live.key ? { messageKey: live.key } : {}),
         });
-        if (event.type === "message_end") this.liveMessageKey = undefined;
+        if (event.type === "message_end") live.key = undefined;
         break;
+      }
       case "tool_execution_start":
       case "tool_execution_update":
       case "tool_execution_end":

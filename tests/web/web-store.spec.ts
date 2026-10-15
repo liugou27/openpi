@@ -1465,6 +1465,35 @@ describe("OpenPI Web store", () => {
     }
   });
 
+  it("drops message events that name another Session instead of rendering them", async () => {
+    const client = new FakeClient();
+    client.snapshots.push(
+      Promise.resolve(snapshot()),
+      Promise.resolve(snapshot()),
+    );
+    const stream = eventStreamHarness();
+    const store = createWebStore(client, {
+      consumeEvents: stream.consumeEvents,
+    });
+    store.getState().actions.start();
+    try {
+      await vi.waitFor(() =>
+        expect(stream.consumeEvents).toHaveBeenCalledOnce(),
+      );
+      stream.emit(
+        runtimeEvent(10, "message_update", {
+          sessionId: "session-2",
+          messageKey: "foreign-live-1",
+          message: { role: "assistant", content: "Another Session's answer" },
+        }),
+      );
+      expect(store.getState().liveMessages).toEqual([]);
+      expect(store.getState().snapshot?.currentSessionId).toBe("session-1");
+    } finally {
+      store.getState().actions.stop();
+    }
+  });
+
   it("keeps its requested view and scoped pending message when another client changes the controller", async () => {
     const client = new FakeClient();
     const viewed = snapshot();

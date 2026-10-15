@@ -41,8 +41,7 @@ type RuntimeHarness = {
   runtime: { session: object; dispose?: () => Promise<void> };
   activePromptTrace?: Trace;
   pendingPromptTraces: Trace[];
-  liveMessageSequence: number;
-  liveMessageKey?: string;
+  liveMessageKeys?: WeakMap<object, { key?: string; sequence: number }>;
   listeners: Set<(event: WebRuntimeEvent) => void>;
   nextTurnEpoch: number;
   terminalTurnKeys: Set<string>;
@@ -328,7 +327,6 @@ type LifecycleHarness = {
   pendingPromptTraces: Trace[];
   activePromptTrace?: Trace;
   turnAbortOperations: Map<string, Promise<unknown>>;
-  liveMessageSequence: number;
   disposed: boolean;
   dispatcherLease: { release: () => Promise<void> };
   webHostLease: { release: () => Promise<void> };
@@ -401,7 +399,6 @@ function lifecycleHarness(runtime: LifecycleRuntime) {
   harness.candidateRuntimes = new Set();
   harness.pendingPromptTraces = [];
   harness.turnAbortOperations = new Map();
-  harness.liveMessageSequence = 0;
   harness.disposed = false;
   harness.dispatcherLease = { release: async () => undefined };
   harness.webHostLease = { release: async () => undefined };
@@ -2687,7 +2684,6 @@ test("message_end and queued prompts do not settle a running turn", (t) => {
   const harness = Object.create(PiWebRuntime.prototype) as RuntimeHarness;
   harness.runtime = { session };
   harness.pendingPromptTraces = [];
-  harness.liveMessageSequence = 0;
   harness.listeners = new Set();
   harness.nextTurnEpoch = 0;
   harness.terminalTurnKeys = new Set();
@@ -2853,6 +2849,78 @@ test("message_end and queued prompts do not settle a running turn", (t) => {
   );
 });
 
+test("live message keys stay per Session when another Session streams in between", () => {
+  const sessionA = {
+    sessionManager: { getSessionId: () => "session-a", getBranch: () => [] },
+  };
+  const sessionB = {
+    sessionManager: { getSessionId: () => "session-b", getBranch: () => [] },
+  };
+  const harness = Object.create(PiWebRuntime.prototype) as RuntimeHarness;
+  harness.runtime = { session: sessionA };
+  harness.pendingPromptTraces = [];
+  harness.listeners = new Set();
+  const events: WebRuntimeEvent[] = [];
+  harness.listeners.add((event) => events.push(event));
+
+  const projectEvent = (
+    PiWebRuntime.prototype as unknown as {
+      projectEvent(this: RuntimeHarness, session: object, event: object): void;
+    }
+  ).projectEvent;
+  const assistant = (text?: string) => ({
+    type: text === undefined ? "message_start" : "message_update",
+    message: {
+      role: "assistant",
+      content: text === undefined ? [] : [{ type: "text", text }],
+    },
+  });
+
+  // Session A streams its answer while the reader watches it.
+  projectEvent.call(harness, sessionA, assistant());
+  projectEvent.call(harness, sessionA, assistant("partial from A"));
+
+  // The reader creates another Session and prompts it; B streams through the
+  // same runtime while A is retained mid-message.
+  harness.runtime = { session: sessionB };
+  projectEvent.call(harness, sessionB, assistant());
+  projectEvent.call(harness, sessionB, {
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [],
+      stopReason: "stop",
+      timestamp: 2,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+    },
+  });
+
+  // The reader switches back to A, whose original message is still streaming.
+  harness.runtime = { session: sessionA };
+  projectEvent.call(harness, sessionA, assistant("more from A"));
+
+  const updates = events
+    .filter((event) => event.type === "message_update")
+    .map((event) => {
+      const detail = event.detail as {
+        sessionId?: string;
+        messageKey?: string;
+      };
+      return { sessionId: detail.sessionId, messageKey: detail.messageKey };
+    });
+  assert.deepEqual(updates, [
+    { sessionId: "session-a", messageKey: "live-1" },
+    { sessionId: "session-a", messageKey: "live-1" },
+  ]);
+});
+
 for (const aborted of [false, true]) {
   test(`toolUse without a terminal result preserves native aborted=${aborted}`, (t) => {
     t.mock.method(Date, "now", () => 10000);
@@ -2867,7 +2935,6 @@ for (const aborted of [false, true]) {
     const harness = Object.create(PiWebRuntime.prototype) as RuntimeHarness;
     harness.runtime = { session };
     harness.pendingPromptTraces = [];
-    harness.liveMessageSequence = 0;
     harness.listeners = new Set();
     harness.nextTurnEpoch = 0;
     harness.terminalTurnKeys = new Set();
@@ -2957,7 +3024,6 @@ test("native retry completion preserves success, exhaustion and backoff cancella
     const harness = Object.create(PiWebRuntime.prototype) as RuntimeHarness;
     harness.runtime = { session };
     harness.pendingPromptTraces = [];
-    harness.liveMessageSequence = 0;
     harness.listeners = new Set();
     harness.nextTurnEpoch = 0;
     harness.terminalTurnKeys = new Set();
