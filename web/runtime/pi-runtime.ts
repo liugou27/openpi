@@ -2687,7 +2687,7 @@ export class PiWebRuntime implements WebRuntimeController {
     return live;
   }
 
-  /** Active/retained subscriptions may overlap during native Set dispatch. */
+  /** Active/retained subscriptions may overlap during native listener dispatch. */
   private withLiveMessageKey(session: object, event: AgentSessionEvent, project?: (key: string | undefined) => void) {
     if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
     const live = this.liveMessageState(session);

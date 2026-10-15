@@ -11,7 +11,7 @@ import type {
   PromptOptions,
   SessionEntry,
 } from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { AgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { registerPlanControl } from "../../extensions/plan-mode/control.ts";
 import { jsonByteLength } from "../../web/protocol/types.ts";
 import {
@@ -3694,14 +3694,15 @@ test("retained settlement rechecks a deferred native wake before disposing its o
 function subscribedMessageFixture() {
   const makeSession = (id: string) => {
     const base = lifecycleSession(id, true);
-    const listeners = new Set<(event: { type: string }) => void>();
+    const nativeListeners = {
+      _eventListeners: [] as ((event: { type: string }) => void)[],
+    };
     const callbacks: ((event: { type: string }) => void)[] = [];
     base.subscribe = (listener) => {
       callbacks.push(listener);
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      return Reflect.apply(AgentSession.prototype.subscribe, nativeListeners, [
+        listener,
+      ]) as () => void;
     };
     return Object.assign(base, {
       callbacks,
@@ -3709,7 +3710,12 @@ function subscribedMessageFixture() {
         type: string;
         message: { role: string; content: string };
       }) {
-        for (const listener of listeners) listener(event);
+        const emit = (
+          AgentSession.prototype as unknown as {
+            _emit(this: object, event: object): void;
+          }
+        )._emit;
+        emit.call(nativeListeners, event);
       },
     });
   };
@@ -3727,8 +3733,14 @@ function subscribedMessageFixture() {
   };
   const events: WebRuntimeEvent[] = [];
   harness.listeners.add((event) => events.push(event));
+  // Production bind installs a phase observer before the projection observer.
+  a.subscribe(() => undefined);
+  b.subscribe(() => undefined);
   harness.attachActiveSession(runtimeA, a);
   harness.retainRuntime(runtimeB);
+  // A native consumer after projection keeps listener-array mutation observable.
+  a.subscribe(() => undefined);
+  b.subscribe(() => undefined);
   const emit = (
     session: typeof a,
     type: string,
