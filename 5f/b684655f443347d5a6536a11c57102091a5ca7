@@ -1,0 +1,24 @@
+web/runtime/pi-runtime.ts
+  s_0b056eb8ea3c8c::t_aa3f3bfdd72511 318,2684,2690-2711,2713,2817,2819-2825,3050-3051
+tests/web/pi-runtime.test.ts
+  s_0b056eb8ea3c8c::t_aa3f3bfdd72511 3694-3881
+  s_0b056eb8ea3c8c::t_ad9b8be2fa3a93 3693
+tests/web/web-store.spec.ts
+  s_0b056eb8ea3c8c::t_aa3f3bfdd72511 1497-1544
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5fb684655f443347d5a6536a11c57102091a5ca7",
+  "prompts": {},
+  "sessions": {
+    "s_0b056eb8ea3c8c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "sess_1d4b7549-3187-4f66-8bbe-63235fe4692d",
+        "model": "unknown"
+      },
+      "human_author": "liufeng <liufeng@dtstack.com>"
+    }
+  }
+}
